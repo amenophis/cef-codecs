@@ -1,0 +1,194 @@
+Lets Alloy-style browsers show Chromium's own pages (chrome://settings,
+chrome://extensions, chrome://history...) as ordinary pages, for Arbalete,
+whose tabs are all Alloy-style browsers.
+
+- CEF (alloy_browser_host_impl.cc) refuses every chrome:// page but a short
+  list. It now lets any of them load when the browser navigates to it (the
+  app, on the user's request) or when another chrome:// page opens it; web
+  content still reaches only the list. The app chooses which pages it opens.
+- These pages expect to sit in a tab of a Chromium Browser window, which an
+  Alloy-style browser is not: the handlers below look one up and crash the
+  browser process when there is none. Each is guarded where a visible button
+  of the pages Arbalete opens reaches it, and does nothing instead:
+  - settings, About: "Get help" (about_handler.cc, ShowHelp);
+  - settings, Appearance: "Customize your toolbar" (appearance_handler.cc);
+  - settings, Import: the file picker's parent window (import_data_handler.cc);
+  - settings, Autofill: "Google Password Manager" (password_manager_handler.cc);
+  - password manager, Settings: "Manage passkeys"
+    (settings_security_key_handler.cc) and "Add shortcut"
+    (passwords_private_delegate_impl.cc);
+  - history, Journeys: its handler, a visit's click and "Open all in new tab
+    group" (history_ui.cc, history_clusters_handler.cc);
+  - extensions, Details: "Extension options" (developer_private_functions.cc).
+
+Paths are relative to Chromium's src (scripts/build.sh).
+
+--- a/cef/libcef/browser/alloy/alloy_browser_host_impl.cc
++++ b/cef/libcef/browser/alloy/alloy_browser_host_impl.cc
+@@ -561,8 +561,14 @@
+     return false;
+   }
+ 
++  // Any WebUI page may load when the user navigates to it, or when another
++  // WebUI page opens it: web content may only open the allowlisted ones.
++  const url::Origin initiator = params.initiator_origin.value_or(
++      opener ? opener->GetLastCommittedOrigin() : url::Origin());
++  const bool is_trusted = !params.is_renderer_initiated ||
++                          initiator.scheme() == content::kChromeUIScheme;
+   if (!is_guest_view && params.url.SchemeIs(content::kChromeUIScheme) &&
+-      !IsAllowedWebUIHost(params.url.host())) {
++      !is_trusted && !IsAllowedWebUIHost(params.url.host())) {
+     // Block navigation to non-allowlisted WebUI pages.
+     LOG(WARNING) << "Navigation to " << params.url.spec()
+                  << " is blocked in Alloy-style browser.";
+--- a/chrome/browser/extensions/api/developer_private/developer_private_functions.cc
++++ b/chrome/browser/extensions/api/developer_private/developer_private_functions.cc
+@@ -1189,7 +1189,10 @@
+   }
+ 
+   content::WebContents* web_contents = GetSenderWebContents();
+-  if (!web_contents) {
++  // CEF: no browser in an Alloy-style browser.
++  if (!web_contents ||
++      !GlobalBrowserCollection::GetInstance()->FindBrowserWithTab(
++          web_contents)) {
+     return RespondNow(Error(kCouldNotFindWebContentsError));
+   }
+ 
+--- a/chrome/browser/extensions/api/passwords_private/passwords_private_delegate_impl.cc
++++ b/chrome/browser/extensions/api/passwords_private/passwords_private_delegate_impl.cc
+@@ -889,7 +889,10 @@
+     content::WebContents* web_contents) {
+   BrowserWindowInterface* browser =
+       GlobalBrowserCollection::GetInstance()->FindBrowserWithTab(web_contents);
+-  DCHECK(browser);
++  // CEF: no browser in an Alloy-style browser.
++  if (!browser) {
++    return;
++  }
+   web_app::CreateWebAppFromCurrentWebContents(
+       browser, web_app::WebAppInstallFlow::kInstallSite);
+   base::UmaHistogramEnumeration(
+--- a/chrome/browser/ui/webui/history/history_ui.cc
++++ b/chrome/browser/ui/webui/history/history_ui.cc
+@@ -240,8 +240,8 @@
+       std::make_unique<history_clusters::HistoryClustersHandler>(
+           std::move(receiver), std::move(page), Profile::FromWebUI(web_ui()),
+           web_ui()->GetWebContents(),
+-          // HistoryUI should always be in a tab. Look it up unconditionally.
+-          tabs::TabInterface::GetFromContents(web_ui()->GetWebContents()));
++          // CEF: not in a tab in an Alloy-style browser.
++          tabs::TabInterface::MaybeGetFromContents(web_ui()->GetWebContents()));
+ }
+ #endif  // !BUILDFLAG(IS_ANDROID)
+ 
+--- a/chrome/browser/ui/webui/history_clusters/history_clusters_handler.cc
++++ b/chrome/browser/ui/webui/history_clusters/history_clusters_handler.cc
+@@ -79,8 +79,9 @@
+   if (std::holds_alternative<raw_ptr<BrowserWindowInterface>>(interface)) {
+     return std::get<raw_ptr<BrowserWindowInterface>>(interface);
+   }
+-  return std::get<raw_ptr<tabs::TabInterface>>(interface)
+-      ->GetBrowserWindowInterface();
++  // CEF: not in a tab in an Alloy-style browser.
++  tabs::TabInterface* tab = std::get<raw_ptr<tabs::TabInterface>>(interface);
++  return tab ? tab->GetBrowserWindowInterface() : nullptr;
+ }
+ 
+ class HistoryClustersSidePanelContextMenu
+@@ -308,6 +309,10 @@
+   content::OpenURLParams params =
+       content::OpenURLParams::CreateBrowserInitiated(
+           url, open_location, ui::PAGE_TRANSITION_AUTO_BOOKMARK);
++  // CEF: no browser in an Alloy-style browser.
++  if (!GetBrowserWindowInterface(interface_)) {
++    return;
++  }
+   GetBrowserWindowInterface(interface_)
+       ->OpenURL(params,
+                 /*navigation_handle_callback=*/{});
+@@ -470,6 +475,10 @@
+     visits.resize(kMaxVisitsToOpenInTabGroup);
+   }
+ 
++  // CEF: no browser in an Alloy-style browser.
++  if (!GetBrowserWindowInterface(interface_)) {
++    return;
++  }
+   auto* model = GetBrowserWindowInterface(interface_)->GetTabStripModel();
+   std::vector<int> tab_indices;
+   tab_indices.reserve(visits.size());
+--- a/chrome/browser/ui/webui/settings/about_handler.cc
++++ b/chrome/browser/ui/webui/settings/about_handler.cc
+@@ -524,6 +524,10 @@
+   BrowserWindowInterface* browser =
+       GlobalBrowserCollection::GetInstance()->FindBrowserWithTab(
+           web_ui()->GetWebContents());
++  // CEF: no browser in an Alloy-style browser.
++  if (!browser) {
++    return;
++  }
+   chrome::ShowHelp(browser, chrome::HelpSource::kWebUI);
+ }
+ 
+--- a/chrome/browser/ui/webui/settings/appearance_handler.cc
++++ b/chrome/browser/ui/webui/settings/appearance_handler.cc
+@@ -90,7 +90,10 @@
+     const base::ListValue& args) {
+   BrowserWindowInterface* browser =
+       GlobalBrowserCollection::GetInstance()->GetLastActiveBrowser();
+-  CHECK(browser);
++  // CEF: no browser in an Alloy-style browser.
++  if (!browser) {
++    return;
++  }
+   chrome::ExecuteCommand(browser, IDC_SHOW_CUSTOMIZE_CHROME_TOOLBAR);
+ }
+ 
+--- a/chrome/browser/ui/webui/settings/import_data_handler.cc
++++ b/chrome/browser/ui/webui/settings/import_data_handler.cc
+@@ -203,7 +203,9 @@
+   select_file_dialog_->SelectFile(
+       ui::SelectFileDialog::SELECT_OPEN_FILE, std::u16string(),
+       base::FilePath(), &file_type_info, 0, base::FilePath::StringType(),
+-      browser->GetWindow()->GetNativeWindow(), nullptr);
++      // CEF: no browser in an Alloy-style browser.
++      browser ? browser->GetWindow()->GetNativeWindow() : gfx::NativeWindow(),
++      nullptr);
+ }
+ 
+ void ImportDataHandler::SendBrowserProfileData(const std::string& callback_id) {
+--- a/chrome/browser/ui/webui/settings/password_manager_handler.cc
++++ b/chrome/browser/ui/webui/settings/password_manager_handler.cc
+@@ -41,7 +41,10 @@
+   BrowserWindowInterface* const current_browser =
+       GlobalBrowserCollection::GetInstance()->FindBrowserWithTab(
+           web_ui()->GetWebContents());
+-  CHECK(current_browser);
++  // CEF: no browser in an Alloy-style browser.
++  if (!current_browser) {
++    return;
++  }
+ 
+   switch (PasswordManagerPage(page)) {
+     case PasswordManagerPage::kPasswords:
+--- a/chrome/browser/ui/webui/settings/settings_security_key_handler.cc
++++ b/chrome/browser/ui/webui/settings/settings_security_key_handler.cc
+@@ -1043,10 +1043,14 @@
+ #endif
+ 
+   // If no system management exists, fall back to Chrome's own settings UI.
+-  chrome::ShowSettingsSubPage(
++  BrowserWindowInterface* browser =
+       GlobalBrowserCollection::GetInstance()->FindBrowserWithTab(
+-          web_ui()->GetWebContents()),
+-      chrome::kPasskeysSubPage);
++          web_ui()->GetWebContents());
++  // CEF: no browser in an Alloy-style browser.
++  if (!browser) {
++    return;
++  }
++  chrome::ShowSettingsSubPage(browser, chrome::kPasskeysSubPage);
+ }
+ 
+ void PasskeysHandler::HandleEnumerate(const base::ListValue& args) {

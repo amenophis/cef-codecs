@@ -4,8 +4,9 @@
 proprietary codecs, H.264, AAC and HEVC, which the [official CEF builds](https://cef-builds.spotifycdn.com/index.html)
 leave out. It is the CEF [Arbalete](https://github.com/amenophis/arbalete) ships with, so that sites like Twitch play.
 
-Each release, `cef-<version>-codecs`, holds CEF's minimal distribution for macOS arm64, named as CEF names it, and
-its SHA-256. Only macOS arm64 is built.
+Each release, `cef-<version>-codecs.<build>`, holds CEF's minimal distribution for macOS arm64, named as CEF names it,
+and its SHA-256. Only macOS arm64 is built. The build number grows when the binary changes for the same CEF version;
+`cef-156.0.7-codecs`, the first, is build 1.
 
 ## How it is built
 
@@ -21,8 +22,12 @@ python3 automate-git.py --download-dir=download --depot-tools-dir=depot_tools \
   --minimal-distrib-only --no-distrib-docs --no-chromium-history --with-pgo-profiles --build-target=cefclient
 ```
 
-Nothing else is changed: the sources are Chromium's and CEF's, at the tags the release names. The builds run on
-the maintainer's Mac, from a private repository, so that no one else's code ever runs there.
+From build 2, the sources are patched with [patches/](patches), each with a header saying what it changes and
+why: [alloy-webui.patch](patches/alloy-webui.patch) lets Alloy-style browsers show Chromium's own pages
+(chrome://settings, extensions, history…) when the app opens them, and guards the buttons of those pages that would
+otherwise crash without a Chromium browser window. Nothing else is changed: the sources are Chromium's and CEF's, at
+the tags the release names. The builds run on the maintainer's Mac, from a private repository, so that no one else's
+code ever runs there.
 
 ## Licenses
 
