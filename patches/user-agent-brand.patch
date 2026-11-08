@@ -1,0 +1,98 @@
+Lets the embedder name its own brand to sites, like Edge, Opera and Vivaldi
+do, for Arbalete, through a --user-agent-brand=<name>/<version> switch
+(--user-agent-brand=Arbalete/0.2.0). Chromium's own User-Agent and client
+hints stay as they are, for sites' compatibility; the brand is only added:
+
+- the default User-Agent (the header and navigator.userAgent) ends with
+  <name>/<major>.<minor>, after Chrome's own tokens, as Edge's ends with
+  Edg/<version>;
+- the client hints' brands (Sec-CH-UA, navigator.userAgentData.brands) list it
+  next to Chromium and the GREASE brand with its major version, and their full
+  version list (Sec-CH-UA-Full-Version-List, getHighEntropyValues) with its
+  full version.
+
+CEF's user_agent setting cannot do it: a User-Agent set whole leaves the high
+entropy client hints out. Without the switch, or with an invalid value,
+nothing changes; a --user-agent set whole still wins.
+
+diff --git a/components/embedder_support/user_agent_utils.cc b/components/embedder_support/user_agent_utils.cc
+index 0dd4dea..69f61f2 100644
+--- a/components/embedder_support/user_agent_utils.cc
++++ b/components/embedder_support/user_agent_utils.cc
+@@ -159,6 +159,33 @@ const std::string& GetWindowsPlatformVersion() {
+ }
+ #endif  // BUILDFLAG(IS_WIN)
+ 
++#if BUILDFLAG(ENABLE_CEF)
++// The embedder's own brand, as <name>/<version>.
++constexpr char kUserAgentBrand[] = "user-agent-brand";
++
++struct EmbedderBrand {
++  std::string name;
++  base::Version version;
++};
++
++// The brand --user-agent-brand names, if it is a valid <name>/<version>.
++std::optional<EmbedderBrand> GetEmbedderBrand() {
++  const std::string value =
++      base::CommandLine::ForCurrentProcess()->GetSwitchValueASCII(
++          kUserAgentBrand);
++  const size_t slash = value.find('/');
++  if (slash == std::string::npos) {
++    return std::nullopt;
++  }
++  EmbedderBrand brand = {value.substr(0, slash),
++                         base::Version(value.substr(slash + 1))};
++  if (!net::HttpUtil::IsToken(brand.name) || !brand.version.IsValid()) {
++    return std::nullopt;
++  }
++  return brand;
++}
++#endif
++
+ const blink::UserAgentBrandList GetUserAgentBrandList(
+     const std::string& major_version,
+     const std::string& full_version,
+@@ -171,6 +198,16 @@ const blink::UserAgentBrandList GetUserAgentBrandList(
+ #if !BUILDFLAG(CHROMIUM_BRANDING)
+   brand = version_info::GetProductName();
+ #endif
++#if BUILDFLAG(ENABLE_CEF)
++  std::optional<EmbedderBrand> embedder_brand = GetEmbedderBrand();
++  if (!additional_brand_version && embedder_brand) {
++    additional_brand_version = blink::UserAgentBrandVersion(
++        embedder_brand->name,
++        output_version_type == blink::UserAgentBrandVersionType::kFullVersion
++            ? embedder_brand->version.GetString()
++            : base::NumberToString(embedder_brand->version.components()[0]));
++  }
++#endif
+ 
+   std::string brand_version =
+       output_version_type == blink::UserAgentBrandVersionType::kFullVersion
+@@ -230,9 +267,22 @@ std::string GetUserAgentInternal() {
+   }
+ #endif
+ 
+-  return ShouldSendUserAgentUnifiedPlatform()
+-             ? BuildUnifiedPlatformUserAgentFromProduct(product)
+-             : BuildUserAgentFromProduct(product);
++  std::string user_agent =
++      ShouldSendUserAgentUnifiedPlatform()
++          ? BuildUnifiedPlatformUserAgentFromProduct(product)
++          : BuildUserAgentFromProduct(product);
++#if BUILDFLAG(ENABLE_CEF)
++  // Like Edge's Edg/<version>, after Chrome's own tokens, with only the major
++  // and minor versions.
++  if (std::optional<EmbedderBrand> brand = GetEmbedderBrand()) {
++    const std::vector<uint32_t>& version = brand->version.components();
++    base::StrAppend(
++        &user_agent,
++        {" ", brand->name, "/", base::NumberToString(version[0]), ".",
++         base::NumberToString(version.size() > 1 ? version[1] : 0)});
++  }
++#endif
++  return user_agent;
+ }
+ 
+ // Generate random order list based on the input size and seed.
