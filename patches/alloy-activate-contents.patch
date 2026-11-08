@@ -1,0 +1,37 @@
+Lets an Alloy-style browser's page be brought forward, for Arbalete, whose
+tabs are all Alloy-style browsers: Picture in Picture's back to tab button,
+`window.focus()`, a service worker's `clients.focus()` and DevTools'
+Page.bringToFront all ask the page's WebContentsDelegate to ActivateContents,
+which Alloy left empty. It now tells the client through
+CefFocusHandler::OnSetFocus with FOCUS_SOURCE_SYSTEM, like
+CefBrowserHost::SetFocus(true) does; the client selects the page's tab.
+
+diff --git a/cef/libcef/browser/alloy/alloy_browser_host_impl.cc b/cef/libcef/browser/alloy/alloy_browser_host_impl.cc
+index 248604e..4629d48 100644
+--- a/cef/libcef/browser/alloy/alloy_browser_host_impl.cc
++++ b/cef/libcef/browser/alloy/alloy_browser_host_impl.cc
+@@ -965,6 +965,12 @@ bool AlloyBrowserHostImpl::TakeFocus(content::WebContents* source,
+   return contents_delegate_.TakeFocus(source, reverse);
+ }
+ 
++// Asked to bring its page forward, like Picture in Picture's back to tab button
++// does, the client is told through OnSetFocus.
++void AlloyBrowserHostImpl::ActivateContents(content::WebContents* contents) {
++  OnSetFocus(FOCUS_SOURCE_SYSTEM);
++}
++
+ void AlloyBrowserHostImpl::CanDownload(
+     const GURL& url,
+     const std::string& request_method,
+diff --git a/cef/libcef/browser/alloy/alloy_browser_host_impl.h b/cef/libcef/browser/alloy/alloy_browser_host_impl.h
+index 9eeb005..db69147 100644
+--- a/cef/libcef/browser/alloy/alloy_browser_host_impl.h
++++ b/cef/libcef/browser/alloy/alloy_browser_host_impl.h
+@@ -198,6 +198,7 @@ class AlloyBrowserHostImpl : public CefBrowserHostBase,
+                          bool proceed,
+                          bool* proceed_to_fire_unload) override;
+   bool TakeFocus(content::WebContents* source, bool reverse) override;
++  void ActivateContents(content::WebContents* contents) override;
+   void CanDownload(const GURL& url,
+                    const std::string& request_method,
+                    base::OnceCallback<void(bool)> callback) override;

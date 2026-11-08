@@ -25,7 +25,9 @@ python3 automate-git.py --download-dir=download --depot-tools-dir=depot_tools \
 From build 2, the sources are patched with [patches/](patches), each with a header saying what it changes and
 why: [alloy-webui.patch](patches/alloy-webui.patch) lets Alloy-style browsers show Chromium's own pages
 (chrome://settings, extensions, history…) when the app opens them, and guards the buttons of those pages that would
-otherwise crash without a Chromium browser window. Nothing else is changed: the sources are Chromium's and CEF's, at
+otherwise crash without a Chromium browser window. From build 3,
+[alloy-activate-contents.patch](patches/alloy-activate-contents.patch) tells the app when a page asks to be brought
+forward, as Picture in Picture's back to tab button does. Nothing else is changed: the sources are Chromium's and CEF's, at
 the tags the release names. The builds run on the maintainer's Mac, from a private repository, so that no one else's
 code ever runs there.
 
