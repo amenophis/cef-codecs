@@ -1,0 +1,136 @@
+Lets Arbalete install a Chrome Web Store extension without asking, like Arc's
+import does: an exported arbalete_install_webstore_extension(cache_path,
+extension_id, done, context) runs Chromium's WebstoreInstallWithPrompt with
+its prompt and its "extension added" bubble turned off, in the profile whose
+web data is in cache_path. Chromium still checks the store's blocklist, the
+CRX's signature and its permissions against the store's manifest. A plain C
+export rather than a CEF API, which Arbalete finds with dlsym: no CEF wrapper
+or binding changes, and only native code in the browser process can call it.
+The installer downloads the CRX from a hidden WebContents without a CEF
+browser, whose downloads CEF cancels: those of the extension installer now go
+to Chrome's download handling, which installs them.
+
+diff --git a/cef/BUILD.gn b/cef/BUILD.gn
+index dd0a558..b307ae6 100644
+--- a/cef/BUILD.gn
++++ b/cef/BUILD.gn
+@@ -524,6 +524,7 @@ source_set("libcef_static") {
+     "libcef/browser/alloy/dialogs/alloy_constrained_window_views_client.h",
+     "libcef/browser/alloy/dialogs/alloy_web_contents_dialog_helper.cc",
+     "libcef/browser/alloy/dialogs/alloy_web_contents_dialog_helper.h",
++    "libcef/browser/arbalete_webstore_install.cc",
+     "libcef/browser/audio_capturer.cc",
+     "libcef/browser/audio_capturer.h",
+     "libcef/browser/audio_loopback_stream_creator.cc",
+diff --git a/cef/libcef/browser/arbalete_webstore_install.cc b/cef/libcef/browser/arbalete_webstore_install.cc
+new file mode 100644
+index 0000000..60cb7c0
+--- /dev/null
++++ b/cef/libcef/browser/arbalete_webstore_install.cc
+@@ -0,0 +1,80 @@
++// Installs a Chrome Web Store extension without asking, for Arbalete, whose
++// import brings along the extensions of another browser's profile that the
++// user chose, like Arc's: Chromium's installer from the store with its prompt
++// and its "extension added" bubble turned off. It still checks the store's
++// blocklist, the CRX's signature and that the CRX asks for no more than the
++// store's manifest. A plain C export, which Arbalete finds at run time: only
++// native code in the browser process can call it.
++
++#include <string>
++
++#include "base/files/file_path.h"
++#include "base/functional/bind.h"
++#include "base/memory/scoped_refptr.h"
++#include "cef/include/internal/cef_export.h"
++#include "cef/libcef/browser/browser_context.h"
++#include "cef/libcef/browser/thread_util.h"
++#include "chrome/browser/extensions/webstore_install_with_prompt.h"
++#include "chrome/browser/profiles/profile.h"
++#include "components/crx_file/id_util.h"
++#include "extensions/browser/install_prompt_data.h"
++#include "extensions/browser/webstore_install_result.h"
++
++namespace {
++
++class SilentWebstoreInstall : public extensions::WebstoreInstallWithPrompt {
++ public:
++  SilentWebstoreInstall(const std::string& id, Profile* profile,
++                        Callback callback)
++      : WebstoreInstallWithPrompt(id, profile, gfx::NativeWindow(),
++                                  std::move(callback)) {
++    set_show_post_install_ui(false);
++  }
++
++ private:
++  ~SilentWebstoreInstall() override = default;
++
++  // No prompt: the installer goes on as if the user accepted.
++  std::unique_ptr<extensions::InstallPromptData> CreateInstallPrompt()
++      const override {
++    return nullptr;
++  }
++};
++
++}  // namespace
++
++// Installs the extension `extension_id` from the Chrome Web Store into the
++// profile whose web data is in `cache_path`, once its request context is
++// initialized. On the UI thread only. Returns 0 if it cannot start; otherwise
++// `done` runs once on the UI thread, with `context` and 0 for success, or
++// Chromium's webstore_install::Result.
++extern "C" CEF_EXPORT int arbalete_install_webstore_extension(
++    const char* cache_path,
++    const char* extension_id,
++    void (*done)(void* context, int result),
++    void* context) {
++  if (!CEF_CURRENTLY_ON_UIT() || !cache_path || !extension_id || !done) {
++    return 0;
++  }
++  const std::string id(extension_id);
++  if (!crx_file::id_util::IdIsValid(id)) {
++    return 0;
++  }
++  CefBrowserContext* browser_context =
++      CefBrowserContext::FromCachePath(base::FilePath(cache_path));
++  Profile* profile = browser_context ? browser_context->AsProfile() : nullptr;
++  if (!profile) {
++    return 0;
++  }
++  auto installer = base::MakeRefCounted<SilentWebstoreInstall>(
++      id, profile,
++      base::BindOnce(
++          [](void (*done)(void*, int), void* context, bool success,
++             const std::string& error,
++             extensions::webstore_install::Result result) {
++            done(context, success ? 0 : static_cast<int>(result));
++          },
++          done, context));
++  installer->BeginInstall();
++  return 1;
++}
+diff --git a/cef/libcef/browser/download_manager_delegate_impl.cc b/cef/libcef/browser/download_manager_delegate_impl.cc
+index e5363cc..662c0fe 100644
+--- a/cef/libcef/browser/download_manager_delegate_impl.cc
++++ b/cef/libcef/browser/download_manager_delegate_impl.cc
+@@ -19,6 +19,7 @@
+ #include "cef/libcef/browser/thread_util.h"
+ #include "chrome/browser/profiles/profile.h"
+ #include "chrome/common/pref_names.h"
++#include "components/download/public/common/download_source.h"
+ #include "components/prefs/pref_service.h"
+ #include "content/public/browser/browser_context.h"
+ #include "content/public/browser/download_item_utils.h"
+@@ -380,6 +381,13 @@ void CefDownloadManagerDelegateImpl::OnDownloadCreated(DownloadManager* manager,
+   // association from either method.
+   CefRefPtr<CefBrowserHostBase> browser = GetOrAssociateBrowser(item);
+   if (!browser) {
++    // Chromium's Web Store installer downloads without a CEF browser, from a
++    // hidden WebContents of its own (arbalete_webstore_install.cc): Chrome's
++    // download handling installs it.
++    if (item->GetDownloadSource() ==
++        download::DownloadSource::EXTENSION_INSTALLER) {
++      return;
++    }
+     // If the download is rejected (e.g. ALT+click on an invalid protocol link)
+     // then an "interrupted" download will be started via DownloadManagerImpl::
+     // StartDownloadWithId (originating from CreateInterruptedDownload) with no

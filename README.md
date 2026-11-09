@@ -29,7 +29,9 @@ otherwise crash without a Chromium browser window. From build 3,
 [alloy-activate-contents.patch](patches/alloy-activate-contents.patch) tells the app when a page asks to be brought
 forward, as Picture in Picture's back to tab button does. From build 4,
 [user-agent-brand.patch](patches/user-agent-brand.patch) lets the app add its own name to the User-Agent and the
-client hints' brands, next to Chromium's, as Edge and Opera do. Nothing else is changed: the sources are Chromium's and CEF's, at
+client hints' brands, next to Chromium's, as Edge and Opera do. From build 5,
+[silent-webstore-install.patch](patches/silent-webstore-install.patch) lets the app install a Chrome Web Store
+extension without asking, as Arc's import does, through Chromium's own installer and its checks. Nothing else is changed: the sources are Chromium's and CEF's, at
 the tags the release names. The builds run on the maintainer's Mac, from a private repository, so that no one else's
 code ever runs there.
 
